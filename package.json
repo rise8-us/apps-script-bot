@@ -1,0 +1,22 @@
+{
+  "name": "@rise8/apps-script-bot",
+  "version": "0.0.1-beta",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "jest"
+  },
+  "keywords": [],
+  "author": "Joshua Nathaniel Miller",
+  "license": "ISC",
+  "devDependencies": {
+    "@google/clasp": "2.4.2",
+    "@types/google-apps-script": "0.0.62",
+    "@types/node": "18.16.0",
+    "jest": "29.5.0",
+    "ts-jest": "29.1.0",
+    "ts-node": "10.9.1",
+    "@types/jest": "29.5.1"
+  }
+}

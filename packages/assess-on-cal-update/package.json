@@ -1,0 +1,13 @@
+{
+  "name": "@rise8/app-script-bot-assess-on-cal-update",
+  "version": "0.0.1-beta",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
