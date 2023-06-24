@@ -39,22 +39,39 @@ export function findOrCreateProjectFolder() {
   return projectFolder;
 }
 
-export function findOrCreateSheet(name: string, headers: string[]) {
-  let projectFolder = findOrCreateProjectFolder();
+export function findSheet(name: string) {
+  const projectFolder = findProjectFolder();
+  if (!projectFolder) {
+    return null;
+  }
 
   try {
     const file = projectFolder.getFilesByName(name).next();
     return SpreadsheetApp.open(file);
   } catch (ignore) {
-    const sheet = SpreadsheetApp.create(name);
+    return null;
+  }
+}
+
+export function findOrCreateSheet(name: string, headers: string[]) {
+  let sheet = findSheet(name);
+  if (!sheet) {
+    let projectFolder = findOrCreateProjectFolder();
+    sheet = SpreadsheetApp.create(name);
     sheet.appendRow(headers);
     projectFolder.addFile(DriveApp.getFileById(sheet.getId()));
-    return sheet;
   }
+
+  return sheet;
+}
+
+export function findCandidateEmailUsernameSheet() {
+  return findSheet("Candidate Email Username");
 }
 
 export function findOrCreateCandidateEmailUsernameSheet() {
   return findOrCreateSheet("Candidate Email Username", [
+    "Hash",
     "Email",
     "GitHub Username",
   ]);
@@ -89,7 +106,7 @@ export function createCandidateForm(
 ) {
   const candidateEmail = candidate.getEmail();
   const form = FormApp.create(
-    "GitHub Username Request for " + candidateEmail.split("@")[0]
+    "GitHub Username Request for " + hash(candidateEmail)
   );
   form.setLimitOneResponsePerUser(true);
   form.setConfirmationMessage("Thanks for submitting your GitHub username!");
@@ -122,6 +139,44 @@ export function createCandidateForm(
   ScriptApp.newTrigger("onFormSubmit").forForm(form).onFormSubmit().create();
 }
 
+export function findRowFromCandidateEmailUsernameSheet(
+  email: string
+): Nullable<[string, string, string]> {
+  const sheet = findCandidateEmailUsernameSheet();
+  if (!sheet) {
+    return null;
+  }
+
+  return sheet
+    .getDataRange()
+    .getValues()
+    .find((row) => row[1] === email) as Nullable<[string, string, string]>;
+}
+
+function hash(input: string) {
+  const rawHash = Utilities.computeDigest(
+    Utilities.DigestAlgorithm.MD5,
+    input,
+    Utilities.Charset.UTF_8 // Multibyte encoding env compatibility
+  );
+  let txtHash = "";
+
+  for (let i = 0; i < rawHash.length; i++) {
+    let hashVal = rawHash[i];
+
+    if (hashVal < 0) {
+      hashVal += 256;
+    }
+
+    if (hashVal.toString(16).length == 1) {
+      txtHash += "0";
+    }
+    txtHash += hashVal.toString(16);
+  }
+
+  return txtHash;
+}
+
 export function sendFormToCandidate(
   event: GoogleAppsScript.Calendar.Schema.Event
 ) {
@@ -138,6 +193,7 @@ export function sendFormToCandidate(
 
   createCandidateForm(candidate);
 }
+
 export function removeTrigger(triggerUid: string) {
   const trigger = ScriptApp.getProjectTriggers().find(
     (trigger) => trigger.getUniqueId() === triggerUid
@@ -150,14 +206,15 @@ export function updateOrInsertCandidateEmailUsernameRowInSheet(
   email: string,
   username: string
 ) {
+  const id = hash(email);
   const values = sheet.getDataRange().getValues();
 
-  const row = values.findIndex((row) => row[0] === email);
+  const row = values.findIndex((row) => row[1] === email);
   if (row === -1) {
-    sheet.appendRow([email, username]);
+    sheet.appendRow([id, email, username]);
   } else {
-    const a1Notation = `A${row + 1}:B${row + 1}`;
-    sheet.getRange(a1Notation).setValues([[email, username]]);
+    const a1Notation = `A${row + 1}:B${row + 1}:C${row + 1}`;
+    sheet.getRange(a1Notation).setValues([[id, email, username]]);
   }
 }
 
@@ -267,4 +324,98 @@ export function onCreateCalendarEvent(
       sendFormToCandidate(event);
     }
   );
+}
+
+enum CalendarEventProcessingStatus {
+  FIFTEEN_MINUTES = "15m",
+}
+
+type HiringEventExtendedProperties =
+  GoogleAppsScript.Calendar.Schema.EventExtendedProperties & {
+    private: { processed: CalendarEventProcessingStatus };
+  };
+
+export function processNextFifteenMinutesOfEvents() {
+  const now = new Date();
+  const fifteenMinutesFromNow = new Date(now.getTime() + 15 * 60 * 1000);
+  const calendarName = PropertiesService.getScriptProperties().getProperty(
+    "SHARED_CALENDAR_NAME"
+  );
+  if (!calendarName) {
+    console.error("CALENDAR_NAME not set.");
+    return;
+  }
+
+  const calendar = CalendarApp.getCalendarsByName(calendarName);
+  if (calendar.length !== 1) {
+    console.error(
+      "Could not determine the Hiring calendar. Number found: " +
+        calendar.length +
+        "."
+    );
+    return;
+  }
+
+  calendar[0].getEvents(now, fifteenMinutesFromNow).forEach((event) => {
+    if (
+      event.getTag("processed") ===
+      CalendarEventProcessingStatus.FIFTEEN_MINUTES
+    ) {
+      return;
+    }
+
+    const domain =
+      PropertiesService.getScriptProperties().getProperty("ORG_DOMAIN");
+    const candidate = event
+      .getGuestList()
+      .find((guest) => guest.getEmail().split("@")[1] !== domain);
+    if (!candidate) {
+      return;
+    }
+
+    const [id, , username] = findRowFromCandidateEmailUsernameSheet(
+      candidate.getEmail()
+    );
+    if (!username) {
+      return;
+    }
+
+    const payload = JSON.stringify({
+      event_type: "clone_anonymous_repository",
+      client_payload: {
+        id,
+        username,
+      },
+    });
+
+    try {
+      const res = UrlFetchApp.fetch(
+        "https://api.github.com/repos/rise8-us/technical-assessment-ts/dispatches",
+        {
+          method: "post",
+          contentType: "application/json",
+          muteHttpExceptions: false,
+          headers: {
+            Authorization: `Bearer ${PropertiesService.getScriptProperties().getProperty(
+              "GH_BOT_SERVICE_TOKEN"
+            )}`,
+            "X-GitHub-Api-Version": "2022-11-28",
+            Accept: "application/vnd.github+json",
+          },
+          payload,
+        }
+      );
+      if (res.getResponseCode() !== 204) {
+        console.error(
+          `Error sending dispatch to GitHub. Response code: ${res.getResponseCode()}.`
+        );
+        return;
+      }
+
+      event.setTag("processed", CalendarEventProcessingStatus.FIFTEEN_MINUTES);
+    } catch (e) {
+      console.error(e);
+      return;
+    }
+  });
 }
