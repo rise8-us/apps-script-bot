@@ -381,7 +381,7 @@ export function processNextFifteenMinutesOfEvents() {
     }
 
     const payload = JSON.stringify({
-      event_type: "clone_anonymous_repository",
+      event_type: "clone-anonymous-repository",
       client_payload: {
         id,
         username,
