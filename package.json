@@ -4,9 +4,6 @@
   "description": "",
   "main": "index.js",
   "type": "module",
-  "scripts": {
-    "test": "jest"
-  },
   "keywords": [],
   "author": "Joshua Nathaniel Miller",
   "license": "ISC",

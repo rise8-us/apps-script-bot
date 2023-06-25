@@ -26,4 +26,11 @@ clasp open
 clasp create --type standalone --title "technical-assessment-on-calendar-event-update"
 ```
 
+## Run Tests from Root
+
+```shell
+pnpm run test --filter @rise8/app-script-bot-assess-on-cal-update
+```
+
+
 
