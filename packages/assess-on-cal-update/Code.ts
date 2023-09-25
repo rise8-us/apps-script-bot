@@ -1,5 +1,17 @@
 type Nullable<T> = T | null;
 
+type HiringEventExtendedProperties =
+  GoogleAppsScript.Calendar.Schema.EventExtendedProperties & {
+    private: {
+      type: "technical" | undefined;
+      appId: string | undefined;
+    };
+  };
+
+enum CalendarEventProcessingStatus {
+  FIFTEEN_MINUTES = "15m",
+}
+
 export function isCancelledEvent(
   event: GoogleAppsScript.Calendar.Schema.Event
 ) {
@@ -15,6 +27,35 @@ export function isNewEvent(event: GoogleAppsScript.Calendar.Schema.Event) {
   const updated = new Date(event.updated);
 
   return updated.getTime() - created.getTime() < 5000;
+}
+
+export function isTechnicalAssessmentEvent(
+  event: GoogleAppsScript.Calendar.Schema.Event
+) {
+  const calendarName = PropertiesService.getScriptProperties().getProperty(
+    "SHARED_CALENDAR_NAME"
+  );
+  if (!calendarName) {
+    console.error("SHARED_CALENDAR_NAME not set.");
+    return;
+  }
+
+  const calendar = CalendarApp.getCalendarsByName(calendarName)[0];
+  if (!calendar) {
+    console.error("Calendar not found.");
+    return;
+  }
+
+  const hiringEvent = Calendar.Events.get(calendar.getId(), event.id);
+
+  const extendedProperties =
+    hiringEvent.extendedProperties as HiringEventExtendedProperties;
+
+  if (!extendedProperties) {
+    return false;
+  }
+
+  return extendedProperties.private.type === "technical";
 }
 
 export function findProjectFolder(): Nullable<GoogleAppsScript.Drive.Folder> {
@@ -305,6 +346,10 @@ export function onCreateCalendarEvent(
   forEachEvent(
     e.calendarId,
     (event: GoogleAppsScript.Calendar.Schema.Event) => {
+      if (!isTechnicalAssessmentEvent(event)) {
+        return;
+      }
+
       if (isCancelledEvent(event)) {
         /**
          * TODO: The following should be replaced with logic that removes
@@ -326,15 +371,6 @@ export function onCreateCalendarEvent(
   );
 }
 
-enum CalendarEventProcessingStatus {
-  FIFTEEN_MINUTES = "15m",
-}
-
-type HiringEventExtendedProperties =
-  GoogleAppsScript.Calendar.Schema.EventExtendedProperties & {
-    private: { processed: CalendarEventProcessingStatus };
-  };
-
 export function processNextFifteenMinutesOfEvents() {
   const now = new Date();
   const fifteenMinutesFromNow = new Date(now.getTime() + 15 * 60 * 1000);
@@ -346,17 +382,27 @@ export function processNextFifteenMinutesOfEvents() {
     return;
   }
 
-  const calendar = CalendarApp.getCalendarsByName(calendarName);
-  if (calendar.length !== 1) {
+  const hiringCalendar = CalendarApp.getCalendarsByName(calendarName);
+  if (hiringCalendar.length !== 1) {
     console.error(
       "Could not determine the Hiring calendar. Number found: " +
-        calendar.length +
+        hiringCalendar.length +
         "."
     );
     return;
   }
 
-  calendar[0].getEvents(now, fifteenMinutesFromNow).forEach((event) => {
+  const defaultCalendar = CalendarApp.getDefaultCalendar();
+
+  hiringCalendar[0].getEvents(now, fifteenMinutesFromNow).forEach((event) => {
+    const hiringEvent = Calendar.Events.get(
+      event.getOriginalCalendarId(),
+      event.getId().replace("@google.com", "")
+    );
+    if (!isTechnicalAssessmentEvent(hiringEvent)) {
+      return;
+    }
+
     if (
       event.getTag("processed") ===
       CalendarEventProcessingStatus.FIFTEEN_MINUTES
