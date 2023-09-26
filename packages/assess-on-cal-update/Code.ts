@@ -207,9 +207,9 @@ export function findRowFromCandidateEmailUsernameSheet(
   return sheet
     .getDataRange()
     .getValues()
-    .find((row) => row[0] === appId) as Nullable<
-    [string, string, string, string]
-  >;
+    .find(
+      (row) => row[0].toString().trim() == appId.toString().trim()
+    ) as Nullable<[string, string, string, string]>;
 }
 
 function hash(input: string) {
@@ -454,6 +454,7 @@ export function processNextFifteenMinutesOfEvents() {
     const [, id, , username] = findRowFromCandidateEmailUsernameSheet(
       extendedProperties.private.appId
     );
+
     if (!username) {
       return;
     }
