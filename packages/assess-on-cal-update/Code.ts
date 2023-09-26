@@ -4,7 +4,8 @@ type HiringEventExtendedProperties =
   GoogleAppsScript.Calendar.Schema.EventExtendedProperties & {
     private: {
       type: "technical" | undefined;
-      appId: string | undefined;
+      tag: "swe" | "pe" | undefined;
+      appId: string | undefined; // Candidate application id
     };
   };
 
@@ -29,9 +30,9 @@ export function isNewEvent(event: GoogleAppsScript.Calendar.Schema.Event) {
   return updated.getTime() - created.getTime() < 5000;
 }
 
-export function isTechnicalAssessmentEvent(
+export function getExtendedProperties(
   event: GoogleAppsScript.Calendar.Schema.Event
-) {
+): HiringEventExtendedProperties | undefined {
   const calendarName = PropertiesService.getScriptProperties().getProperty(
     "SHARED_CALENDAR_NAME"
   );
@@ -46,16 +47,18 @@ export function isTechnicalAssessmentEvent(
     return;
   }
 
-  const hiringEvent = Calendar.Events.get(calendar.getId(), event.id);
-
-  const extendedProperties =
-    hiringEvent.extendedProperties as HiringEventExtendedProperties;
-
-  if (!extendedProperties) {
-    return false;
+  try {
+    const hiringEvent = Calendar.Events.get(calendar.getId(), event.id);
+    return hiringEvent.extendedProperties as HiringEventExtendedProperties;
+  } catch (e) {
+    console.error('Error getting event "' + event.id + '".');
+    return;
   }
-
-  return extendedProperties.private.type === "technical";
+}
+export function isTechnicalAssessmentEvent(
+  extendedProperties: HiringEventExtendedProperties
+) {
+  return extendedProperties?.private.type === "technical";
 }
 
 export function findProjectFolder(): Nullable<GoogleAppsScript.Drive.Folder> {
@@ -112,6 +115,7 @@ export function findCandidateEmailUsernameSheet() {
 
 export function findOrCreateCandidateEmailUsernameSheet() {
   return findOrCreateSheet("Candidate Email Username", [
+    "AppId",
     "Hash",
     "Email",
     "GitHub Username",
@@ -143,15 +147,27 @@ export function findOrCreateCandidateFormsFolder() {
 }
 
 export function createCandidateForm(
-  candidate: GoogleAppsScript.Calendar.EventGuest
+  candidate: GoogleAppsScript.Calendar.EventGuest,
+  extendedProperties: HiringEventExtendedProperties
 ) {
   const candidateEmail = candidate.getEmail();
   const form = FormApp.create(
-    "GitHub Username Request for " + hash(candidateEmail)
+    "GitHub Username Request #" + extendedProperties.private.appId
   );
   form.setLimitOneResponsePerUser(true);
   form.setConfirmationMessage("Thanks for submitting your GitHub username!");
 
+  form
+    .addTextItem()
+    .setHelpText("Please enter the # from the title above.")
+    .setTitle("ID")
+    .setRequired(true)
+    .setValidation(
+      FormApp.createTextValidation()
+        .requireTextMatchesPattern(extendedProperties.private.appId)
+        // @ts-ignore
+        .build()
+    );
   form
     .addTextItem()
     .setHelpText("Please enter the email address you used to apply to Rise8")
@@ -181,8 +197,8 @@ export function createCandidateForm(
 }
 
 export function findRowFromCandidateEmailUsernameSheet(
-  email: string
-): Nullable<[string, string, string]> {
+  appId: string
+): Nullable<[string, string, string, string]> {
   const sheet = findCandidateEmailUsernameSheet();
   if (!sheet) {
     return null;
@@ -191,7 +207,9 @@ export function findRowFromCandidateEmailUsernameSheet(
   return sheet
     .getDataRange()
     .getValues()
-    .find((row) => row[1] === email) as Nullable<[string, string, string]>;
+    .find((row) => row[0] === appId) as Nullable<
+    [string, string, string, string]
+  >;
 }
 
 function hash(input: string) {
@@ -219,7 +237,8 @@ function hash(input: string) {
 }
 
 export function sendFormToCandidate(
-  event: GoogleAppsScript.Calendar.Schema.Event
+  event: GoogleAppsScript.Calendar.Schema.Event,
+  extendedProperties: HiringEventExtendedProperties
 ) {
   const domain =
     PropertiesService.getScriptProperties().getProperty("ORG_DOMAIN");
@@ -232,7 +251,7 @@ export function sendFormToCandidate(
     return;
   }
 
-  createCandidateForm(candidate);
+  createCandidateForm(candidate, extendedProperties);
 }
 
 export function removeTrigger(triggerUid: string) {
@@ -244,18 +263,20 @@ export function removeTrigger(triggerUid: string) {
 
 export function updateOrInsertCandidateEmailUsernameRowInSheet(
   sheet: GoogleAppsScript.Spreadsheet.Spreadsheet,
+  appId: string,
   email: string,
   username: string
 ) {
-  const id = hash(email);
   const values = sheet.getDataRange().getValues();
 
-  const row = values.findIndex((row) => row[1] === email);
+  const row = values.findIndex((row) => row[0] === appId);
   if (row === -1) {
-    sheet.appendRow([id, email, username]);
+    sheet.appendRow([appId, hash(appId).substring(0, 8), email, username]);
   } else {
-    const a1Notation = `A${row + 1}:B${row + 1}:C${row + 1}`;
-    sheet.getRange(a1Notation).setValues([[id, email, username]]);
+    const a1Notation = `A${row + 1}:B${row + 1}:C${row + 1}:D${row + 1}`;
+    sheet
+      .getRange(a1Notation)
+      .setValues([[appId, hash(appId).substring(0, 8), email, username]]);
   }
 }
 
@@ -287,7 +308,7 @@ export function forEachEvent(
     options.syncToken = syncToken;
   }
 
-  let eventList;
+  let eventList: GoogleAppsScript.Calendar.Schema.Events;
   let pageToken;
 
   do {
@@ -295,7 +316,17 @@ export function forEachEvent(
       options.pageToken = pageToken;
     }
 
-    eventList = Calendar.Events.list(calendarId, options);
+    try {
+      eventList = Calendar.Events.list(calendarId, options);
+    } catch (e) {
+      options.syncToken = undefined;
+      eventList = Calendar.Events.list(
+        calendarId,
+        Object.assign(options, {
+          timeMin: new Date().toISOString(),
+        })
+      );
+    }
 
     eventList.items.forEach(callback);
 
@@ -328,14 +359,14 @@ export function onFormSubmit(e: {
 
   const values = e.response
     .getItemResponses()
-    .map((response) => response.getResponse()) as [string, string];
-  if (values.length !== 2) {
-    console.error("Expected 2 values, got " + values.length + ".");
+    .map((response) => response.getResponse()) as [string, string, string];
+  if (values.length !== 3) {
+    console.error("Expected 3 values, got " + values.length + ".");
     return;
   }
-  const [email, username] = values;
+  const [appId, email, username] = values;
 
-  updateOrInsertCandidateEmailUsernameRowInSheet(sheet, email, username);
+  updateOrInsertCandidateEmailUsernameRowInSheet(sheet, appId, email, username);
   removeFormFromCandidateFormsFolder(form);
   removeTrigger(e.triggerUid);
 }
@@ -346,7 +377,9 @@ export function onCreateCalendarEvent(
   forEachEvent(
     e.calendarId,
     (event: GoogleAppsScript.Calendar.Schema.Event) => {
-      if (!isTechnicalAssessmentEvent(event)) {
+      const extendedProperties = getExtendedProperties(event);
+
+      if (!isTechnicalAssessmentEvent(extendedProperties)) {
         return;
       }
 
@@ -366,7 +399,7 @@ export function onCreateCalendarEvent(
         return;
       }
 
-      sendFormToCandidate(event);
+      sendFormToCandidate(event, extendedProperties);
     }
   );
 }
@@ -392,14 +425,13 @@ export function processNextFifteenMinutesOfEvents() {
     return;
   }
 
-  const defaultCalendar = CalendarApp.getDefaultCalendar();
-
   hiringCalendar[0].getEvents(now, fifteenMinutesFromNow).forEach((event) => {
     const hiringEvent = Calendar.Events.get(
       event.getOriginalCalendarId(),
       event.getId().replace("@google.com", "")
     );
-    if (!isTechnicalAssessmentEvent(hiringEvent)) {
+    const extendedProperties = getExtendedProperties(hiringEvent);
+    if (!isTechnicalAssessmentEvent(extendedProperties)) {
       return;
     }
 
@@ -419,8 +451,8 @@ export function processNextFifteenMinutesOfEvents() {
       return;
     }
 
-    const [id, , username] = findRowFromCandidateEmailUsernameSheet(
-      candidate.getEmail()
+    const [, id, , username] = findRowFromCandidateEmailUsernameSheet(
+      extendedProperties.private.appId
     );
     if (!username) {
       return;
@@ -434,6 +466,7 @@ export function processNextFifteenMinutesOfEvents() {
       },
     });
 
+    // TODO: Add a new sheet that relates assessmentType to repo
     try {
       const res = UrlFetchApp.fetch(
         "https://api.github.com/repos/rise8-us/technical-assessment-ts/dispatches",
